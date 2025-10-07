@@ -105,7 +105,6 @@ func (b *Broker) handleClientConnection(client *client.Client) {
 	for {
 		byteAmt, err := client.Connection.Read(readBuffer)
 		if err != nil {
-			// TODO: Handle client disconnect
 			log.Printf("unable to read bytes from client: %v", err)
 			b.handleClientDisconnection(client)
 			break
