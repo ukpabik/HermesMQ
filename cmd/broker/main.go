@@ -1,0 +1,34 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/ukpabik/HermesMQ/internal/broker"
+)
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigChan
+		log.Printf("received signal: %v — initiating shutdown...", sig)
+		cancel()
+	}()
+
+	b := broker.InitializeBroker(":8080")
+	log.Printf("Starting server on port %s", b.Port)
+	if err := b.Run(ctx); err != nil {
+		log.Fatalf("broker error: %v", err)
+	}
+
+	log.Println("broker stopped gracefully ✨")
+	time.Sleep(500 * time.Millisecond)
+}
