@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"slices"
+	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/ukpabik/HermesMQ/internal/client"
+	"github.com/ukpabik/HermesMQ/internal/protocol"
 )
 
 type Broker struct {
@@ -23,17 +23,11 @@ type Broker struct {
 	TopicMap           map[string]*Topic
 }
 
-type ClientResponse struct {
-	Action    string    `json:"action"`
-	Topic     string    `json:"topic"`
-	Payload   string    `json:"payload"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
 const (
-	readBufferSize = 1024
-	publishState   = "publish"
-	subscribeState = "subscribe"
+	readBufferSize   = 1024
+	publishState     = "publish"
+	subscribeState   = "subscribe"
+	unsubscribeState = "unsubscribe"
 )
 
 func InitializeBroker(port string) *Broker {
@@ -79,39 +73,39 @@ func (b *Broker) Run(ctx context.Context) error {
 
 		clientId := uuid.New().String()
 
-		// TODO: Add more to this once client grows....
-		client := &client.Client{
+		// TODO: Add more to this once user grows....
+		user := &client.Client{
 			ID:         clientId,
 			Connection: cl,
 		}
 
 		b.Mutex.Lock()
-		b.CurrentConnections[clientId] = client
+		b.CurrentConnections[clientId] = user
 		b.Mutex.Unlock()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b.handleClientConnection(client)
+			b.handleClientConnection(user)
 		}()
 	}
 }
 
-func (b *Broker) handleClientConnection(client *client.Client) {
+func (b *Broker) handleClientConnection(user *client.Client) {
 	// Add the client to the list of current connections
-	defer client.Connection.Close()
+	defer user.Connection.Close()
 
 	readBuffer := make([]byte, readBufferSize)
 	for {
-		byteAmt, err := client.Connection.Read(readBuffer)
+		byteAmt, err := user.Connection.Read(readBuffer)
 		if err != nil {
 			log.Printf("unable to read bytes from client: %v", err)
-			b.handleClientDisconnection(client)
+			b.handleClientDisconnection(user)
 			break
 		}
 		readBuffer = readBuffer[:byteAmt]
 
-		clientResp := &ClientResponse{}
+		clientResp := &protocol.Payload{}
 		err = json.Unmarshal(readBuffer, &clientResp)
 		if err != nil {
 			log.Printf("unable to marshal client response to json: %v", err)
@@ -121,30 +115,70 @@ func (b *Broker) handleClientConnection(client *client.Client) {
 		switch clientResp.Action {
 		case publishState:
 			log.Printf("publish received")
+			go b.handleClientPublish(*clientResp, user)
 		case subscribeState:
 			log.Printf("subscribe received")
+		case unsubscribeState:
+			log.Printf("unsubscribe received")
 		default:
 			log.Printf("undefined action state received: %v", clientResp.Action)
 		}
 	}
 }
 
-func (b *Broker) handleClientDisconnection(client *client.Client) {
+func parseTopicName(topicName string) (string, error) {
+
+	strippedTopicName := strings.TrimSpace(topicName)
+
+	if strippedTopicName == "" {
+		return "", fmt.Errorf("empty topic name")
+	}
+
+	return strippedTopicName, nil
+}
+
+func (b *Broker) handleClientPublish(payload protocol.Payload, user *client.Client) {
+	if user == nil {
+		log.Printf("client is nil")
+		return
+	}
+
+	parsedName, err := parseTopicName(payload.Topic)
+	if err != nil {
+		log.Printf("name malformed: %v", err)
+		return
+	}
+
+	b.Mutex.Lock()
+	topic, ok := b.TopicMap[parsedName]
+	if !ok {
+		log.Printf("topic doesn't exist... creating topic")
+		newMap := make(map[string]*client.Client)
+		topic = &Topic{
+			Name:        parsedName,
+			Subscribers: newMap,
+		}
+		b.TopicMap[parsedName] = topic
+	}
+	b.Mutex.Unlock()
+
+	log.Printf("publishing message to topic: %s", parsedName)
+	topic.Broadcast(payload, user)
+}
+
+func (b *Broker) handleClientDisconnection(user *client.Client) {
 	// Remove from all topics
 	b.Mutex.Lock()
 	defer b.Mutex.Unlock()
 	for _, topic := range b.TopicMap {
 		topic.Mutex.Lock()
-		for i, cl := range topic.Connections {
-			if cl.ID == client.ID {
-				topic.Connections = slices.Delete(topic.Connections, i, i)
-				break
-			}
+		if ok, err := topic.removeClient(user); !ok || err != nil {
+			log.Printf("unable to remove client from topic %v: %v", topic.Name, err)
 		}
 		topic.Mutex.Unlock()
 	}
 
-	delete(b.CurrentConnections, client.ID)
+	delete(b.CurrentConnections, user.ID)
 }
 
 func (b *Broker) cleanupConnections() {
