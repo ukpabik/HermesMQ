@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -91,39 +92,43 @@ func (b *Broker) Run(ctx context.Context) error {
 	}
 }
 
-func (b *Broker) handleClientConnection(user *client.Client) {
-	// Add the client to the list of current connections
-	defer user.Connection.Close()
+func (b *Broker) handleClientConnection(cl *client.Client) {
+	defer cl.Connection.Close()
 
-	readBuffer := make([]byte, readBufferSize)
-	for {
-		byteAmt, err := user.Connection.Read(readBuffer)
-		if err != nil {
-			log.Printf("unable to read bytes from client: %v", err)
-			b.handleClientDisconnection(user)
-			break
-		}
-		readBuffer = readBuffer[:byteAmt]
+	scanner := bufio.NewScanner(cl.Connection)
+	scanner.Split(bufio.ScanLines)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
 
 		clientResp := &protocol.Payload{}
-		err = json.Unmarshal(readBuffer, &clientResp)
+		err := json.Unmarshal(line, &clientResp)
 		if err != nil {
-			log.Printf("unable to marshal client response to json: %v", err)
+			log.Printf("invalid JSON from client %s: %v", cl.ID, err)
+			continue
 		}
 
-		// TODO: Handle client actions
+		log.Printf("received from client %s: %+v", cl.ID, clientResp)
+
 		switch clientResp.Action {
 		case publishState:
-			log.Printf("publish received")
-			go b.handleClientPublish(*clientResp, user)
+			log.Printf("publish received from client %s", cl.ID)
+			go b.handleClientPublish(*clientResp, cl)
 		case subscribeState:
-			log.Printf("subscribe received")
+			log.Printf("subscribe received from client %s", cl.ID)
+			go b.handleClientSubscribe(*clientResp, cl)
 		case unsubscribeState:
-			log.Printf("unsubscribe received")
+			log.Printf("unsubscribe received from client %s", cl.ID)
 		default:
-			log.Printf("undefined action state received: %v", clientResp.Action)
+			log.Printf("undefined action state received from client %s: %v", cl.ID, clientResp.Action)
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("scanner error for client %s: %v", cl.ID, err)
+	}
+
+	b.handleClientDisconnection(cl)
 }
 
 func parseTopicName(topicName string) (string, error) {
@@ -137,19 +142,18 @@ func parseTopicName(topicName string) (string, error) {
 	return strippedTopicName, nil
 }
 
-func (b *Broker) handleClientPublish(payload protocol.Payload, user *client.Client) {
-	if user == nil {
-		log.Printf("client is nil")
-		return
+func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client) error {
+	if cl == nil {
+		return fmt.Errorf("client is nil")
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
-		log.Printf("name malformed: %v", err)
-		return
+		return fmt.Errorf("name malformed: %v", err)
 	}
 
 	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
 	topic, ok := b.TopicMap[parsedName]
 	if !ok {
 		log.Printf("topic doesn't exist... creating topic")
@@ -160,25 +164,60 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, user *client.Clie
 		}
 		b.TopicMap[parsedName] = topic
 	}
-	b.Mutex.Unlock()
 
 	log.Printf("publishing message to topic: %s", parsedName)
-	topic.Broadcast(payload, user)
+	if err := topic.Broadcast(payload, cl); err != nil {
+		return fmt.Errorf("error while broadcasting: %v", err)
+	}
+
+	// TODO: Send ACK back to client
+	return nil
 }
 
-func (b *Broker) handleClientDisconnection(user *client.Client) {
+func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Client) error {
+	if cl == nil {
+		return fmt.Errorf("client is nil")
+	}
+
+	parsedName, err := parseTopicName(payload.Topic)
+	if err != nil {
+		return fmt.Errorf("name malformed: %v", err)
+	}
+
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
+	topic, ok := b.TopicMap[parsedName]
+	if !ok {
+		log.Printf("topic doesn't exist... creating topic")
+		newMap := make(map[string]*client.Client)
+		topic = &Topic{
+			Name:        parsedName,
+			Subscribers: newMap,
+		}
+		b.TopicMap[parsedName] = topic
+	}
+
+	if ok, err := topic.AddClient(cl); err != nil || !ok {
+		return fmt.Errorf("unable to subscribe to topic: %v", err)
+	}
+
+	// TODO: Send ACK back to client
+	return nil
+}
+
+func (b *Broker) handleClientDisconnection(cl *client.Client) {
 	// Remove from all topics
 	b.Mutex.Lock()
 	defer b.Mutex.Unlock()
 	for _, topic := range b.TopicMap {
 		topic.Mutex.Lock()
-		if ok, err := topic.removeClient(user); !ok || err != nil {
+		if ok, err := topic.removeClient(cl); !ok || err != nil {
 			log.Printf("unable to remove client from topic %v: %v", topic.Name, err)
 		}
 		topic.Mutex.Unlock()
 	}
 
-	delete(b.CurrentConnections, user.ID)
+	delete(b.CurrentConnections, cl.ID)
 }
 
 func (b *Broker) cleanupConnections() {
