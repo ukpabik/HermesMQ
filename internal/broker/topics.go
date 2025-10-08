@@ -17,7 +17,7 @@ type Topic struct {
 	Mutex       sync.Mutex
 }
 
-func (t *Topic) AddClient(c *client.Client) (bool, error) {
+func (t *Topic) addClient(c *client.Client) (bool, error) {
 	t.Mutex.Lock()
 	defer t.Mutex.Unlock()
 	t.Subscribers[c.ID] = c

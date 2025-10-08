@@ -25,7 +25,6 @@ type Broker struct {
 }
 
 const (
-	readBufferSize   = 1024
 	publishState     = "publish"
 	subscribeState   = "subscribe"
 	unsubscribeState = "unsubscribe"
@@ -119,6 +118,7 @@ func (b *Broker) handleClientConnection(cl *client.Client) {
 			go b.handleClientSubscribe(*clientResp, cl)
 		case unsubscribeState:
 			log.Printf("unsubscribe received from client %s", cl.ID)
+			go b.handleClientUnsubscribe(*clientResp, cl)
 		default:
 			log.Printf("undefined action state received from client %s: %v", cl.ID, clientResp.Action)
 		}
@@ -170,7 +170,6 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client
 		return fmt.Errorf("error while broadcasting: %v", err)
 	}
 
-	// TODO: Send ACK back to client
 	return nil
 }
 
@@ -197,11 +196,34 @@ func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Clie
 		b.TopicMap[parsedName] = topic
 	}
 
-	if ok, err := topic.AddClient(cl); err != nil || !ok {
+	if ok, err := topic.addClient(cl); err != nil || !ok {
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
-	// TODO: Send ACK back to client
+	return nil
+}
+
+func (b *Broker) handleClientUnsubscribe(payload protocol.Payload, cl *client.Client) error {
+	if cl == nil {
+		return fmt.Errorf("client is nil")
+	}
+
+	parsedName, err := parseTopicName(payload.Topic)
+	if err != nil {
+		return fmt.Errorf("name malformed: %v", err)
+	}
+
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
+	topic, ok := b.TopicMap[parsedName]
+	if !ok {
+		return fmt.Errorf("topic does not exist")
+	}
+
+	if ok, err := topic.removeClient(cl); err != nil || !ok {
+		return fmt.Errorf("unable to subscribe to topic: %v", err)
+	}
+
 	return nil
 }
 
