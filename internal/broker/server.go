@@ -170,6 +170,8 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client
 		return fmt.Errorf("error while broadcasting: %v", err)
 	}
 
+	// TODO: Send ACK to client
+
 	return nil
 }
 
@@ -200,6 +202,8 @@ func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Clie
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
+	// TODO: Send ACK to client
+
 	return nil
 }
 
@@ -223,6 +227,8 @@ func (b *Broker) handleClientUnsubscribe(payload protocol.Payload, cl *client.Cl
 	if ok, err := topic.removeClient(cl); err != nil || !ok {
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
+
+	// TODO: Send ACK to client
 
 	return nil
 }

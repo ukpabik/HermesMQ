@@ -15,6 +15,8 @@ type Client struct {
 	ID               string
 	Mutex            sync.Mutex
 	SubscribedTopics map[string]struct{}
+	ReadChannel      chan protocol.Payload
+	StopReadChannel  chan bool
 }
 
 func sendBytes(payload protocol.Payload, cl *Client) error {
@@ -50,7 +52,9 @@ func (c *Client) Subscribe(topicName string) error {
 		return fmt.Errorf("unable to send payload bytes to server: %v", err)
 	}
 
-	// TODO: Start new goroutine here for the new subscription?
+	if len(c.SubscribedTopics) == 1 {
+		c.startReaders()
+	}
 
 	return nil
 }
@@ -70,7 +74,9 @@ func (c *Client) Unsubscribe(topicName string) error {
 		return fmt.Errorf("unable to send payload bytes to server: %v", err)
 	}
 
-	// TODO: Handle getting rid of the goroutine here?
+	if len(c.SubscribedTopics) == 0 {
+		close(c.StopReadChannel)
+	}
 
 	return nil
 }
@@ -80,4 +86,17 @@ func (c *Client) HasSubscribed(topicName string) bool {
 	_, ok := c.SubscribedTopics[topicName]
 	c.Mutex.Unlock()
 	return ok
+}
+
+func (c *Client) startReaders() {
+	if c.ReadChannel == nil {
+		c.ReadChannel = make(chan protocol.Payload)
+	}
+
+	if c.StopReadChannel == nil {
+		c.StopReadChannel = make(chan bool)
+	}
+
+	go c.tcpReadLoop()
+	go c.chanReadLoop()
 }
