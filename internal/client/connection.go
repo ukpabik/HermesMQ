@@ -50,6 +50,8 @@ func (c *Client) Subscribe(topicName string) error {
 		return fmt.Errorf("unable to send payload bytes to server: %v", err)
 	}
 
+	// TODO: Start new goroutine here for the new subscription?
+
 	return nil
 }
 
@@ -67,6 +69,8 @@ func (c *Client) Unsubscribe(topicName string) error {
 	if err := sendBytes(*payload, c); err != nil {
 		return fmt.Errorf("unable to send payload bytes to server: %v", err)
 	}
+
+	// TODO: Handle getting rid of the goroutine here?
 
 	return nil
 }
