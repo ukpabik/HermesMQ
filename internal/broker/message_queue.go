@@ -42,6 +42,7 @@ type PriorityMessageQueue struct {
 func NewPriorityMessageQueue() *PriorityMessageQueue {
 	pmq := &PriorityMessageQueue{
 		MessageQueue: make(PriorityQueue, 0),
+		ReadChannel:  make(chan protocol.Payload),
 	}
 	heap.Init(&pmq.MessageQueue)
 	return pmq
