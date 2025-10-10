@@ -29,6 +29,8 @@ func (t *Topic) addClient(c *client.Client) (bool, error) {
 }
 
 func (t *Topic) removeClient(c *client.Client) (bool, error) {
+	t.Mutex.Lock()
+	defer t.Mutex.Unlock()
 	delete(t.Subscribers, c.ID)
 	_, ok := t.Subscribers[c.ID]
 	if ok {

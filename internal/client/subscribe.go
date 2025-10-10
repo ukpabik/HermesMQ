@@ -20,28 +20,19 @@ func (c *Client) tcpReadLoop() {
 			continue
 		}
 
-		select {
-		case c.ReadChannel <- payload:
-		case <-c.StopReadChannel:
-			return
-		}
+		c.ReadChannel <- payload
 	}
 
 	if err := reader.Err(); err != nil {
 		log.Printf("socket read error: %v", err)
 	}
+
+	close(c.ReadChannel)
 }
 
 func (c *Client) chanReadLoop() {
-
-outerLoop:
-	for {
-		select {
-		case <-c.StopReadChannel:
-			log.Println("stopping read loop...")
-			break outerLoop
-		case val := <-c.ReadChannel:
-			log.Printf("received payload from topic %s", val.Topic)
-		}
+	for val := range c.ReadChannel {
+		log.Printf("received payload from topic %s", val.Topic)
 	}
+	log.Println("read loop stopped")
 }

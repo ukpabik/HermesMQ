@@ -16,19 +16,32 @@ type Client struct {
 	Mutex            sync.Mutex
 	SubscribedTopics map[string]struct{}
 	ReadChannel      chan protocol.Payload
-	StopReadChannel  chan bool
 }
 
 func sendBytes(payload protocol.Payload, cl *Client) error {
+	if cl == nil || cl.Connection == nil {
+		return fmt.Errorf("client or connection is nil")
+	}
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("unable to marshal payload into bytes: %v", err)
+		return fmt.Errorf("marshal payload: %w", err)
 	}
 	payloadBytes = append(payloadBytes, '\n')
 
-	totalBytes, err := cl.Connection.Write(payloadBytes)
-	if err != nil || totalBytes == 0 {
-		return fmt.Errorf("unable to write bytes: %v", err)
+	cl.Mutex.Lock()
+	defer cl.Mutex.Unlock()
+
+	if err := cl.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+
+	written, err := cl.Connection.Write(payloadBytes)
+	if err != nil {
+		return fmt.Errorf("write to connection: %w", err)
+	}
+	if written != len(payloadBytes) {
+		return fmt.Errorf("incomplete write: wrote %d/%d bytes", written, len(payloadBytes))
 	}
 
 	return nil
@@ -39,8 +52,14 @@ func (c *Client) Subscribe(topicName string) error {
 	if c.SubscribedTopics == nil {
 		c.SubscribedTopics = make(map[string]struct{})
 	}
+	if _, exists := c.SubscribedTopics[topicName]; exists {
+		c.Mutex.Unlock()
+		return nil
+	}
+
+	shouldStartReaders := len(c.SubscribedTopics) == 0
 	c.SubscribedTopics[topicName] = struct{}{}
-	defer c.Mutex.Unlock()
+	c.Mutex.Unlock()
 
 	payload := &protocol.Payload{
 		Action:    "subscribe",
@@ -49,10 +68,13 @@ func (c *Client) Subscribe(topicName string) error {
 	}
 
 	if err := sendBytes(*payload, c); err != nil {
-		return fmt.Errorf("unable to send payload bytes to server: %v", err)
+		c.Mutex.Lock()
+		delete(c.SubscribedTopics, topicName)
+		c.Mutex.Unlock()
+		return fmt.Errorf("subscribe to %s: %w", topicName, err)
 	}
 
-	if len(c.SubscribedTopics) == 1 {
+	if shouldStartReaders {
 		c.startReaders()
 	}
 
@@ -61,8 +83,12 @@ func (c *Client) Subscribe(topicName string) error {
 
 func (c *Client) Unsubscribe(topicName string) error {
 	c.Mutex.Lock()
+	if _, exists := c.SubscribedTopics[topicName]; !exists {
+		c.Mutex.Unlock()
+		return nil
+	}
 	delete(c.SubscribedTopics, topicName)
-	defer c.Mutex.Unlock()
+	c.Mutex.Unlock()
 
 	payload := &protocol.Payload{
 		Action:    "unsubscribe",
@@ -71,30 +97,15 @@ func (c *Client) Unsubscribe(topicName string) error {
 	}
 
 	if err := sendBytes(*payload, c); err != nil {
-		return fmt.Errorf("unable to send payload bytes to server: %v", err)
-	}
-
-	if len(c.SubscribedTopics) == 0 {
-		close(c.StopReadChannel)
+		return fmt.Errorf("unsubscribe from %s: %w", topicName, err)
 	}
 
 	return nil
 }
 
-func (c *Client) HasSubscribed(topicName string) bool {
-	c.Mutex.Lock()
-	_, ok := c.SubscribedTopics[topicName]
-	c.Mutex.Unlock()
-	return ok
-}
-
 func (c *Client) startReaders() {
 	if c.ReadChannel == nil {
 		c.ReadChannel = make(chan protocol.Payload)
-	}
-
-	if c.StopReadChannel == nil {
-		c.StopReadChannel = make(chan bool)
 	}
 
 	go c.tcpReadLoop()

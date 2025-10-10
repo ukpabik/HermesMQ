@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/ukpabik/HermesMQ/internal/client"
@@ -22,6 +23,7 @@ type Broker struct {
 	CurrentConnections map[string]*client.Client
 	Mutex              sync.Mutex
 	TopicMap           map[string]*Topic
+	MessageQueue       *PriorityMessageQueue
 }
 
 const (
@@ -33,10 +35,12 @@ const (
 func InitializeBroker(port string) *Broker {
 	connectionsMap := make(map[string]*client.Client)
 	topicMap := make(map[string]*Topic)
+	mq := NewPriorityMessageQueue()
 	return &Broker{
 		Port:               port,
 		TopicMap:           topicMap,
 		CurrentConnections: connectionsMap,
+		MessageQueue:       mq,
 	}
 }
 
@@ -55,6 +59,9 @@ func (b *Broker) Run(ctx context.Context) error {
 		<-ctx.Done()
 		b.Listener.Close()
 	}()
+
+	go b.DequeueLoop(ctx)
+	go b.ReadMessageLoop()
 
 	for {
 		cl, err := b.Listener.Accept()
@@ -165,12 +172,13 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client
 		b.TopicMap[parsedName] = topic
 	}
 
-	log.Printf("publishing message to topic: %s", parsedName)
-	if err := topic.Broadcast(payload, cl); err != nil {
-		return fmt.Errorf("error while broadcasting: %v", err)
-	}
+	b.MessageQueue.Enqueue(&payload)
 
-	// TODO: Send ACK to client
+	go func() {
+		if err := b.sendACK("Successfully published!", publishState, topic.Name, cl); err != nil {
+			log.Printf("unable to send ACK to client: %v", err)
+		}
+	}()
 
 	return nil
 }
@@ -202,7 +210,11 @@ func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Clie
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
-	// TODO: Send ACK to client
+	go func() {
+		if err := b.sendACK("Successfully subscribed!", subscribeState, topic.Name, cl); err != nil {
+			log.Printf("unable to send ACK to client: %v", err)
+		}
+	}()
 
 	return nil
 }
@@ -228,21 +240,22 @@ func (b *Broker) handleClientUnsubscribe(payload protocol.Payload, cl *client.Cl
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
-	// TODO: Send ACK to client
+	go func() {
+		if err := b.sendACK("Successfully unsubscribed!", unsubscribeState, topic.Name, cl); err != nil {
+			log.Printf("unable to send ACK to client: %v", err)
+		}
+	}()
 
 	return nil
 }
 
 func (b *Broker) handleClientDisconnection(cl *client.Client) {
-	// Remove from all topics
 	b.Mutex.Lock()
 	defer b.Mutex.Unlock()
 	for _, topic := range b.TopicMap {
-		topic.Mutex.Lock()
 		if ok, err := topic.removeClient(cl); !ok || err != nil {
 			log.Printf("unable to remove client from topic %v: %v", topic.Name, err)
 		}
-		topic.Mutex.Unlock()
 	}
 
 	delete(b.CurrentConnections, cl.ID)
@@ -257,4 +270,64 @@ func (b *Broker) cleanupConnections() {
 		cl.Connection.Close()
 		delete(b.CurrentConnections, id)
 	}
+}
+
+func (b *Broker) sendACK(body, action, topic string, cl *client.Client) error {
+	b.Mutex.Lock()
+	defer b.Mutex.Unlock()
+
+	ackPayload := &protocol.Payload{
+		Action:    action + "_ack",
+		Topic:     topic,
+		Body:      body,
+		Timestamp: time.Now().UTC(),
+	}
+
+	data, err := json.Marshal(ackPayload)
+	if err != nil {
+		return fmt.Errorf("unable to marshal payload: %v", err)
+	}
+
+	data = append(data, '\n')
+
+	cl.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, err = cl.Connection.Write(data)
+	if err != nil {
+		return fmt.Errorf("error writing to subscriber %s: %v", cl.ID, err)
+	}
+
+	return nil
+}
+
+func (b *Broker) DequeueLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			close(b.MessageQueue.ReadChannel)
+			return
+		case <-ticker.C:
+			payload, ok := b.MessageQueue.Dequeue()
+			if ok {
+				b.MessageQueue.ReadChannel <- *payload
+			}
+		}
+	}
+}
+
+func (b *Broker) ReadMessageLoop() {
+	for val := range b.MessageQueue.ReadChannel {
+		log.Printf("received message: %v", val.Body)
+
+		b.Mutex.Lock()
+		topic, exists := b.TopicMap[val.Topic]
+		b.Mutex.Unlock()
+
+		if exists {
+			topic.Broadcast(val, nil)
+		}
+	}
+	log.Println("channel closed")
 }
