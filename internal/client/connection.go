@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -17,6 +18,11 @@ type Client struct {
 	SubscribedTopics map[string]struct{}
 	ReadChannel      chan protocol.Payload
 }
+
+var (
+	ErrNotConnected      = errors.New("client not connected")
+	ErrAlreadySubscribed = errors.New("already subscribed to topic")
+)
 
 func sendBytes(payload protocol.Payload, cl *Client) error {
 	if cl == nil || cl.Connection == nil {
@@ -110,4 +116,30 @@ func (c *Client) startReaders() {
 
 	go c.tcpReadLoop()
 	go c.chanReadLoop()
+}
+
+func (c *Client) IsConnected() bool {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+	return c.Connection != nil
+}
+
+func (c *Client) Close() error {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	if c.Connection == nil {
+		return nil
+	}
+
+	err := c.Connection.Close()
+	c.Connection = nil
+	c.SubscribedTopics = nil
+
+	if c.ReadChannel != nil {
+		close(c.ReadChannel)
+		c.ReadChannel = nil
+	}
+
+	return err
 }
