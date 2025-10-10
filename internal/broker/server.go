@@ -61,7 +61,7 @@ func (b *Broker) Run(ctx context.Context) error {
 	}()
 
 	go b.DequeueLoop(ctx)
-	go b.ReadMessageLoop()
+	go b.ReadMessageLoop(ctx)
 
 	for {
 		cl, err := b.Listener.Accept()
@@ -99,7 +99,7 @@ func (b *Broker) Run(ctx context.Context) error {
 }
 
 func (b *Broker) handleClientConnection(cl *client.Client) {
-	defer cl.Connection.Close()
+	defer cl.Close()
 
 	scanner := bufio.NewScanner(cl.Connection)
 	scanner.Split(bufio.ScanLines)
@@ -118,16 +118,31 @@ func (b *Broker) handleClientConnection(cl *client.Client) {
 
 		switch clientResp.Action {
 		case publishState:
-			log.Printf("publish received from client %s", cl.ID)
-			go b.handleClientPublish(*clientResp, cl)
+			go func(payload protocol.Payload) {
+				if err := b.handleClientPublish(payload, cl); err != nil {
+					log.Printf("❌ [%s] publish error: %v", cl.ID, err)
+					b.sendACK(fmt.Sprintf("publish failed: %v", err), "error", payload.Topic, cl)
+				}
+			}(*clientResp)
+
 		case subscribeState:
-			log.Printf("subscribe received from client %s", cl.ID)
-			go b.handleClientSubscribe(*clientResp, cl)
+			go func(payload protocol.Payload) {
+				if err := b.handleClientSubscribe(payload, cl); err != nil {
+					log.Printf("❌ [%s] subscribe error: %v", cl.ID, err)
+					b.sendACK(fmt.Sprintf("subscribe failed: %v", err), "error", payload.Topic, cl)
+				}
+			}(*clientResp)
+
 		case unsubscribeState:
-			log.Printf("unsubscribe received from client %s", cl.ID)
-			go b.handleClientUnsubscribe(*clientResp, cl)
+			go func(payload protocol.Payload) {
+				if err := b.handleClientUnsubscribe(payload, cl); err != nil {
+					log.Printf("❌ [%s] unsubscribe error: %v", cl.ID, err)
+					b.sendACK(fmt.Sprintf("unsubscribe failed: %v", err), "error", payload.Topic, cl)
+				}
+			}(*clientResp)
+
 		default:
-			log.Printf("undefined action state received from client %s: %v", cl.ID, clientResp.Action)
+			log.Printf("⚠️  [%s] unknown action: %s", cl.ID, clientResp.Action)
 		}
 	}
 
@@ -160,7 +175,6 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client
 	}
 
 	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
 	topic, ok := b.TopicMap[parsedName]
 	if !ok {
 		log.Printf("topic doesn't exist... creating topic")
@@ -171,11 +185,12 @@ func (b *Broker) handleClientPublish(payload protocol.Payload, cl *client.Client
 		}
 		b.TopicMap[parsedName] = topic
 	}
-
+	topicName := topic.Name
+	b.Mutex.Unlock()
 	b.MessageQueue.Enqueue(&payload)
 
 	go func() {
-		if err := b.sendACK("Successfully published!", publishState, topic.Name, cl); err != nil {
+		if err := b.sendACK("Successfully published!", publishState, topicName, cl); err != nil {
 			log.Printf("unable to send ACK to client: %v", err)
 		}
 	}()
@@ -194,7 +209,6 @@ func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Clie
 	}
 
 	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
 	topic, ok := b.TopicMap[parsedName]
 	if !ok {
 		log.Printf("topic doesn't exist... creating topic")
@@ -205,13 +219,15 @@ func (b *Broker) handleClientSubscribe(payload protocol.Payload, cl *client.Clie
 		}
 		b.TopicMap[parsedName] = topic
 	}
+	topicName := topic.Name
+	b.Mutex.Unlock()
 
 	if ok, err := topic.addClient(cl); err != nil || !ok {
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
 	go func() {
-		if err := b.sendACK("Successfully subscribed!", subscribeState, topic.Name, cl); err != nil {
+		if err := b.sendACK("Successfully subscribed!", subscribeState, topicName, cl); err != nil {
 			log.Printf("unable to send ACK to client: %v", err)
 		}
 	}()
@@ -237,7 +253,7 @@ func (b *Broker) handleClientUnsubscribe(payload protocol.Payload, cl *client.Cl
 	}
 
 	if ok, err := topic.removeClient(cl); err != nil || !ok {
-		return fmt.Errorf("unable to subscribe to topic: %v", err)
+		return fmt.Errorf("unable to unsubscribe to topic: %v", err)
 	}
 
 	go func() {
@@ -273,9 +289,6 @@ func (b *Broker) cleanupConnections() {
 }
 
 func (b *Broker) sendACK(body, action, topic string, cl *client.Client) error {
-	b.Mutex.Lock()
-	defer b.Mutex.Unlock()
-
 	ackPayload := &protocol.Payload{
 		Action:    action + "_ack",
 		Topic:     topic,
@@ -288,6 +301,8 @@ func (b *Broker) sendACK(body, action, topic string, cl *client.Client) error {
 		return fmt.Errorf("unable to marshal payload: %v", err)
 	}
 
+	cl.Mutex.Lock()
+	defer cl.Mutex.Unlock()
 	data = append(data, '\n')
 
 	cl.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -317,17 +332,21 @@ func (b *Broker) DequeueLoop(ctx context.Context) {
 	}
 }
 
-func (b *Broker) ReadMessageLoop() {
-	for val := range b.MessageQueue.ReadChannel {
-		log.Printf("received message: %v", val.Body)
+func (b *Broker) ReadMessageLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case val := <-b.MessageQueue.ReadChannel:
+			log.Printf("received message: %v", val.Body)
 
-		b.Mutex.Lock()
-		topic, exists := b.TopicMap[val.Topic]
-		b.Mutex.Unlock()
+			b.Mutex.Lock()
+			topic, exists := b.TopicMap[val.Topic]
+			b.Mutex.Unlock()
 
-		if exists {
-			topic.Broadcast(val, nil)
+			if exists {
+				topic.Broadcast(val, nil)
+			}
 		}
 	}
-	log.Println("channel closed")
 }
