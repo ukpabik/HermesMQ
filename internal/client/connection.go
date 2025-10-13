@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sethvargo/go-limiter"
+	"github.com/sethvargo/go-limiter/memorystore"
 	"github.com/ukpabik/HermesMQ/internal/protocol"
 )
 
@@ -17,12 +20,45 @@ type Client struct {
 	Mutex            sync.Mutex
 	SubscribedTopics map[string]struct{}
 	ReadChannel      chan protocol.Payload
+	SubscribeStore   limiter.Store
+	PublishStore     limiter.Store
 }
 
 var (
 	ErrNotConnected      = errors.New("client not connected")
 	ErrAlreadySubscribed = errors.New("already subscribed to topic")
 )
+
+const (
+	SUBSCRIBE_LIMIT_AMOUNT = 5
+	MESSAGE_LIMIT_AMOUNT   = 75
+	RATE_LIMIT_INTERVAL    = time.Second
+)
+
+func InitializeClient(id string, conn net.Conn) (*Client, error) {
+
+	subscribeStore, err := memorystore.New(&memorystore.Config{
+		Tokens:   SUBSCRIBE_LIMIT_AMOUNT,
+		Interval: RATE_LIMIT_INTERVAL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize subscribe rate limiter")
+	}
+
+	publishStore, err := memorystore.New(&memorystore.Config{
+		Tokens:   MESSAGE_LIMIT_AMOUNT,
+		Interval: RATE_LIMIT_INTERVAL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize publish rate limiter")
+	}
+	return &Client{
+		ID:             id,
+		Connection:     conn,
+		PublishStore:   publishStore,
+		SubscribeStore: subscribeStore,
+	}, nil
+}
 
 func sendBytes(payload protocol.Payload, cl *Client) error {
 	if cl == nil || cl.Connection == nil {
@@ -54,6 +90,15 @@ func sendBytes(payload protocol.Payload, cl *Client) error {
 }
 
 func (c *Client) Subscribe(topicName string) error {
+	ctx := context.Background()
+
+	_, _, reset, ok, err := c.SubscribeStore.Take(ctx, c.ID)
+	if err != nil || !ok {
+		resetTime := time.Unix(int64(reset), 0)
+		waitDuration := time.Until(resetTime)
+		return fmt.Errorf("subscribe rate limited, retry in %v", waitDuration.Round(time.Millisecond))
+	}
+
 	c.Mutex.Lock()
 	if c.SubscribedTopics == nil {
 		c.SubscribedTopics = make(map[string]struct{})
@@ -88,6 +133,15 @@ func (c *Client) Subscribe(topicName string) error {
 }
 
 func (c *Client) Unsubscribe(topicName string) error {
+	ctx := context.Background()
+
+	_, _, reset, ok, err := c.SubscribeStore.Take(ctx, c.ID)
+	if err != nil || !ok {
+		resetTime := time.Unix(int64(reset), 0)
+		waitDuration := time.Until(resetTime)
+		return fmt.Errorf("subscribe rate limited, retry in %v", waitDuration.Round(time.Millisecond))
+	}
+
 	c.Mutex.Lock()
 	if _, exists := c.SubscribedTopics[topicName]; !exists {
 		c.Mutex.Unlock()

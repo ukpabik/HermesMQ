@@ -80,10 +80,10 @@ func (b *Broker) Run(ctx context.Context) error {
 
 		clientId := uuid.New().String()
 
-		// TODO: Add more to this once user grows....
-		user := &client.Client{
-			ID:         clientId,
-			Connection: cl,
+		user, err := client.InitializeClient(clientId, cl)
+		if err != nil {
+			log.Printf("error initializing client: %v", err)
+			continue
 		}
 
 		b.Mutex.Lock()
