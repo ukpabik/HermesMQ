@@ -1,3 +1,13 @@
-# 📨 HermesMQ (in progress)
+# 📨 HermesMQ
 
-HermesMQ is a **lightweight, high-performance message queuing system** built around the **Publish/Subscribe (Pub/Sub)** architecture. Its goal is to provide **low-latency, fault-tolerant message delivery** between clients via a **scalable TCP-based message broker**. I found **Kafka** super interesting after using it in a previous project, and wanted to try building my own messaging system from scratch.
+HermesMQ is a **lightweight, high-performance message queuing system** built around the **Publish/Subscribe (Pub/Sub)** architecture. 
+
+I found **Kafka** super interesting after using it in a previous project, and wanted to try building my own messaging system from scratch.
+
+Run a broker:
+```
+go run cmd/broker
+```
+
+> [!NOTE]
+> I will be making a dashboard and a way to test the client/server interactions soon!
