@@ -187,11 +187,10 @@ func (c *Client) startReaders() {
 		c.ReadChannel = make(chan protocol.Payload, 100)
 	}
 	c.readersStarted = true
-	c.readersStopped.Add(2)
+	c.readersStopped.Add(1)
 	c.Mutex.Unlock()
 
 	go c.tcpReadLoop()
-	go c.chanReadLoop()
 }
 
 func (c *Client) IsConnected() bool {

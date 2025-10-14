@@ -56,30 +56,3 @@ func (c *Client) tcpReadLoop() {
 		log.Printf("socket read error: %v", err)
 	}
 }
-
-func (c *Client) chanReadLoop() {
-	defer c.readersStopped.Done()
-
-	c.Mutex.Lock()
-	readCh := c.ReadChannel
-	stopCh := c.stopReaders
-	c.Mutex.Unlock()
-
-	if readCh == nil || stopCh == nil {
-		return
-	}
-
-	for {
-		select {
-		case val, ok := <-readCh:
-			if !ok {
-				log.Println("read loop stopped: channel closed")
-				return
-			}
-			log.Printf("received payload from topic: %v", val.Body)
-		case <-stopCh:
-			log.Println("read loop stopped: shutdown signal")
-			return
-		}
-	}
-}
