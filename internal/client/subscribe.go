@@ -16,7 +16,7 @@ func (c *Client) tcpReadLoop() {
 		line := reader.Bytes()
 		var payload protocol.Payload
 		if err := json.Unmarshal(line, &payload); err != nil {
-			log.Printf("invalid server message: %v", err)
+			log.Printf("invalid server message: %v, \n%v", err, string(line))
 			continue
 		}
 
@@ -26,8 +26,6 @@ func (c *Client) tcpReadLoop() {
 	if err := reader.Err(); err != nil {
 		log.Printf("socket read error: %v", err)
 	}
-
-	close(c.ReadChannel)
 }
 
 func (c *Client) chanReadLoop() {

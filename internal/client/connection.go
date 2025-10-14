@@ -90,11 +90,14 @@ func sendBytes(payload protocol.Payload, cl *Client) error {
 }
 
 func (c *Client) Subscribe(topicName string) error {
+	if c == nil || c.Connection == nil {
+		return fmt.Errorf("client or connection is nil")
+	}
 	ctx := context.Background()
 
 	_, _, reset, ok, err := c.SubscribeStore.Take(ctx, c.ID)
 	if err != nil || !ok {
-		resetTime := time.Unix(int64(reset), 0)
+		resetTime := time.Unix(0, int64(reset))
 		waitDuration := time.Until(resetTime)
 		return fmt.Errorf("subscribe rate limited, retry in %v", waitDuration.Round(time.Millisecond))
 	}
@@ -116,6 +119,7 @@ func (c *Client) Subscribe(topicName string) error {
 		Action:    "subscribe",
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
+		SenderID:  c.ID,
 	}
 
 	if err := sendBytes(*payload, c); err != nil {
@@ -133,11 +137,14 @@ func (c *Client) Subscribe(topicName string) error {
 }
 
 func (c *Client) Unsubscribe(topicName string) error {
+	if c == nil || c.Connection == nil {
+		return fmt.Errorf("client or connection is nil")
+	}
 	ctx := context.Background()
 
 	_, _, reset, ok, err := c.SubscribeStore.Take(ctx, c.ID)
 	if err != nil || !ok {
-		resetTime := time.Unix(int64(reset), 0)
+		resetTime := time.Unix(0, int64(reset))
 		waitDuration := time.Until(resetTime)
 		return fmt.Errorf("subscribe rate limited, retry in %v", waitDuration.Round(time.Millisecond))
 	}
@@ -154,6 +161,7 @@ func (c *Client) Unsubscribe(topicName string) error {
 		Action:    "unsubscribe",
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
+		SenderID:  c.ID,
 	}
 
 	if err := sendBytes(*payload, c); err != nil {

@@ -7,4 +7,5 @@ type Payload struct {
 	Topic     string      `json:"topic"`
 	Body      interface{} `json:"body"`
 	Timestamp time.Time   `json:"timestamp"`
+	SenderID  string      `json:"sender_id"`
 }

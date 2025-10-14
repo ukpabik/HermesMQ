@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -15,7 +16,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 
 	go func() {
 		sig := <-sigChan
@@ -25,7 +26,7 @@ func main() {
 
 	b := broker.InitializeBroker(":8080")
 	log.Printf("Starting server on port %s", b.Port)
-	if err := b.Run(ctx); err != nil {
+	if err := b.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("broker error: %v", err)
 	}
 

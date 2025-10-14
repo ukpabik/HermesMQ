@@ -39,7 +39,7 @@ func (t *Topic) removeClient(c *client.Client) (bool, error) {
 	return true, nil
 }
 
-func (t *Topic) Broadcast(payload protocol.Payload, sender *client.Client) error {
+func (t *Topic) Broadcast(payload protocol.Payload, senderID string) error {
 	t.Mutex.Lock()
 	defer t.Mutex.Unlock()
 
@@ -47,9 +47,10 @@ func (t *Topic) Broadcast(payload protocol.Payload, sender *client.Client) error
 	if err != nil {
 		return fmt.Errorf("error marshaling broadcast payload: %v", err)
 	}
+	data = append(data, '\n')
 
 	for id, sub := range t.Subscribers {
-		if sender != nil && id == sender.ID {
+		if senderID != "" && id == senderID {
 			continue
 		}
 
