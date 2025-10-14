@@ -412,6 +412,10 @@ func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) err
 	if cl == nil || cl.Connection == nil {
 		return fmt.Errorf("client or connection is nil")
 	}
+	payloadType := protocol.ACK
+	if action == "error" {
+		payloadType = protocol.Error
+	}
 
 	select {
 	case <-wrapper.Ctx.Done():
@@ -421,6 +425,7 @@ func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) err
 
 	ackPayload := &protocol.Payload{
 		Action:    action + "_ack",
+		Type:      string(payloadType),
 		Topic:     topic,
 		Body:      body,
 		Timestamp: time.Now().UTC(),
@@ -451,22 +456,25 @@ func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) err
 }
 
 func (b *Broker) DequeueLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			close(b.MessageQueue.ReadChannel)
 			log.Println("dequeue loop stopped")
 			return
-		case <-ticker.C:
-			payload, ok := b.MessageQueue.Dequeue()
-			if ok {
+
+		case <-b.MessageQueue.Notify():
+			for {
+				payload, ok := b.MessageQueue.Dequeue()
+				if !ok {
+					break
+				}
 				select {
-				case b.MessageQueue.ReadChannel <- *payload:
 				case <-ctx.Done():
+					close(b.MessageQueue.ReadChannel)
+					log.Println("dequeue loop stopped")
 					return
+				case b.MessageQueue.ReadChannel <- *payload:
 				}
 			}
 		}

@@ -39,12 +39,14 @@ type PriorityMessageQueue struct {
 	ReadChannel  chan protocol.Payload
 	MessageQueue PriorityQueue
 	Mutex        sync.Mutex
+	notifyCh     chan struct{}
 }
 
 func NewPriorityMessageQueue() *PriorityMessageQueue {
 	pmq := &PriorityMessageQueue{
 		MessageQueue: make(PriorityQueue, 0),
-		ReadChannel:  make(chan protocol.Payload),
+		ReadChannel:  make(chan protocol.Payload, 1024),
+		notifyCh:     make(chan struct{}, 1),
 	}
 	heap.Init(&pmq.MessageQueue)
 	return pmq
@@ -54,6 +56,11 @@ func (pmq *PriorityMessageQueue) Enqueue(payload *protocol.Payload) {
 	pmq.Mutex.Lock()
 	heap.Push(&pmq.MessageQueue, payload)
 	pmq.Mutex.Unlock()
+
+	select {
+	case pmq.notifyCh <- struct{}{}:
+	default:
+	}
 }
 
 func (pmq *PriorityMessageQueue) Dequeue() (*protocol.Payload, bool) {
@@ -80,4 +87,8 @@ func (pmq *PriorityMessageQueue) Peek() (*protocol.Payload, bool) {
 		return nil, false
 	}
 	return pmq.MessageQueue[0], true
+}
+
+func (pmq *PriorityMessageQueue) Notify() <-chan struct{} {
+	return pmq.notifyCh
 }

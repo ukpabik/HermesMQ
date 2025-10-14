@@ -57,7 +57,7 @@ func (t *Topic) Broadcast(payload protocol.Payload, senderID string) error {
 
 	var wg sync.WaitGroup
 	for _, sub := range subscribers {
-		wg.Add(2)
+		wg.Add(1)
 		go func(cl *client.Client) {
 			defer wg.Done()
 

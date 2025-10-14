@@ -35,6 +35,7 @@ func (cl *Client) Publish(topicName string, body interface{}) error {
 
 	payload := &protocol.Payload{
 		Action:    "publish",
+		Type:      string(protocol.Data),
 		Topic:     topicName,
 		Body:      body,
 		Timestamp: time.Now().UTC(),

@@ -123,6 +123,7 @@ func (c *Client) Subscribe(topicName string) error {
 
 	payload := &protocol.Payload{
 		Action:    "subscribe",
+		Type:      string(protocol.Data),
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
 		SenderID:  c.ID,
@@ -165,6 +166,7 @@ func (c *Client) Unsubscribe(topicName string) error {
 
 	payload := &protocol.Payload{
 		Action:    "unsubscribe",
+		Type:      string(protocol.Data),
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
 		SenderID:  c.ID,
