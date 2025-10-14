@@ -55,11 +55,16 @@ func (t *Topic) Broadcast(payload protocol.Payload, senderID string) error {
 	}
 	t.Mutex.Unlock()
 
+	sema := make(chan struct{}, 10)
+
 	var wg sync.WaitGroup
 	for _, sub := range subscribers {
 		wg.Add(1)
+
+		sema <- struct{}{}
 		go func(cl *client.Client) {
 			defer wg.Done()
+			defer func() { <-sema }()
 
 			cl.Mutex.Lock()
 			conn := cl.Connection
