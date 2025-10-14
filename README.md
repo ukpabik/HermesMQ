@@ -31,6 +31,3 @@ The interface to interact:
 ✅ subscribed to 'test-topic'
 > 2025/10/14 10:32:39 received payload from topic: Successfully subscribed!
 ```
-
-> [!NOTE]
-> I will be making a dashboard to see live connections and to manage topics soon!
