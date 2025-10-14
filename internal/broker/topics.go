@@ -31,36 +31,55 @@ func (t *Topic) addClient(c *client.Client) (bool, error) {
 func (t *Topic) removeClient(c *client.Client) (bool, error) {
 	t.Mutex.Lock()
 	defer t.Mutex.Unlock()
+
 	delete(t.Subscribers, c.ID)
-	_, ok := t.Subscribers[c.ID]
-	if ok {
-		return false, fmt.Errorf("error removing client from topic")
-	}
-	return true, nil
+	isEmpty := len(t.Subscribers) == 0
+
+	return isEmpty, nil
 }
 
 func (t *Topic) Broadcast(payload protocol.Payload, senderID string) error {
-	t.Mutex.Lock()
-	defer t.Mutex.Unlock()
-
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("error marshaling broadcast payload: %v", err)
 	}
 	data = append(data, '\n')
 
+	t.Mutex.Lock()
+	subscribers := make([]*client.Client, 0, len(t.Subscribers))
 	for id, sub := range t.Subscribers {
 		if senderID != "" && id == senderID {
 			continue
 		}
-
-		go func(sub *client.Client, subID string) {
-			sub.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			_, err := sub.Connection.Write(data)
-			if err != nil {
-				log.Printf("error writing to subscriber %s: %v", id, err)
-			}
-		}(sub, id)
+		subscribers = append(subscribers, sub)
 	}
+	t.Mutex.Unlock()
+
+	var wg sync.WaitGroup
+	for _, sub := range subscribers {
+		wg.Add(2)
+		go func(cl *client.Client) {
+			defer wg.Done()
+
+			cl.Mutex.Lock()
+			conn := cl.Connection
+			cl.Mutex.Unlock()
+
+			if conn == nil {
+				return
+			}
+
+			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				log.Printf("set deadline error for %s: %v", cl.ID, err)
+				return
+			}
+
+			if _, err := conn.Write(data); err != nil {
+				log.Printf("write error to %s: %v", cl.ID, err)
+			}
+		}(sub)
+	}
+
+	wg.Wait()
 	return nil
 }
