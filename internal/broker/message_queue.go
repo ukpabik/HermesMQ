@@ -2,6 +2,7 @@ package broker
 
 import (
 	"container/heap"
+	"sync"
 
 	"github.com/ukpabik/HermesMQ/internal/protocol"
 )
@@ -37,6 +38,7 @@ func (pq *PriorityQueue) Pop() interface{} {
 type PriorityMessageQueue struct {
 	ReadChannel  chan protocol.Payload
 	MessageQueue PriorityQueue
+	Mutex        sync.Mutex
 }
 
 func NewPriorityMessageQueue() *PriorityMessageQueue {
@@ -49,24 +51,33 @@ func NewPriorityMessageQueue() *PriorityMessageQueue {
 }
 
 func (pmq *PriorityMessageQueue) Enqueue(payload *protocol.Payload) {
+	pmq.Mutex.Lock()
 	heap.Push(&pmq.MessageQueue, payload)
+	pmq.Mutex.Unlock()
 }
 
 func (pmq *PriorityMessageQueue) Dequeue() (*protocol.Payload, bool) {
-	if pmq.Size() == 0 {
-		return nil, false
-	}
-	payload := heap.Pop(&pmq.MessageQueue).(*protocol.Payload)
-	return payload, true
-}
+	pmq.Mutex.Lock()
+	defer pmq.Mutex.Unlock()
 
-func (pmq *PriorityMessageQueue) Peek() (*protocol.Payload, bool) {
-	if pmq.Size() == 0 {
+	if len(pmq.MessageQueue) == 0 {
 		return nil, false
 	}
-	return pmq.MessageQueue[0], true
+	return heap.Pop(&pmq.MessageQueue).(*protocol.Payload), true
 }
 
 func (pmq *PriorityMessageQueue) Size() int {
-	return pmq.MessageQueue.Len()
+	pmq.Mutex.Lock()
+	defer pmq.Mutex.Unlock()
+	return len(pmq.MessageQueue)
+}
+
+func (pmq *PriorityMessageQueue) Peek() (*protocol.Payload, bool) {
+	pmq.Mutex.Lock()
+	defer pmq.Mutex.Unlock()
+
+	if len(pmq.MessageQueue) == 0 {
+		return nil, false
+	}
+	return pmq.MessageQueue[0], true
 }
