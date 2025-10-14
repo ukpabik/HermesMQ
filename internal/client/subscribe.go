@@ -32,7 +32,7 @@ func (c *Client) tcpReadLoop() {
 
 func (c *Client) chanReadLoop() {
 	for val := range c.ReadChannel {
-		log.Printf("received payload from topic %s", val.Topic)
+		log.Printf("received payload from topic: %v", val.Body)
 	}
 	log.Println("read loop stopped")
 }

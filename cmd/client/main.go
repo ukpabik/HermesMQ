@@ -20,9 +20,9 @@ func main() {
 		log.Fatalf("unable to connect to broker: %v", err)
 	}
 
-	cl := &client.Client{
-		Connection: conn,
-		ID:         fmt.Sprintf("client-%d", time.Now().Unix()),
+	cl, err := client.InitializeClient(fmt.Sprintf("client-%d", time.Now().Unix()), conn)
+	if err != nil {
+		log.Fatalf("unable to initialize client: %v", err)
 	}
 	defer cl.Close()
 
