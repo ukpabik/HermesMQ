@@ -44,7 +44,6 @@ func main() {
 	}()
 
 	go func() {
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -52,7 +51,11 @@ func main() {
 			case msg, ok := <-cl.ReadChannel:
 				if !ok {
 					log.Println("\n🔌 connection to broker lost")
-					close(disconnectChan)
+					select {
+					case <-disconnectChan:
+					default:
+						close(disconnectChan)
+					}
 					cancel()
 					return
 				}
@@ -77,8 +80,9 @@ func main() {
 		if err := scanner.Err(); err != nil {
 			log.Printf("scanner error: %v", err)
 		}
-		close(inputChan)
 	}()
+
+	fmt.Print("> ")
 
 	for {
 		select {
@@ -104,6 +108,7 @@ func main() {
 			if !handleCommand(cl, input) {
 				return
 			}
+			fmt.Print("> ")
 		}
 	}
 }
@@ -152,15 +157,20 @@ func handleCommand(cl *client.Client, input string) bool {
 
 	case "list":
 		cl.Mutex.Lock()
-		if len(cl.SubscribedTopics) == 0 {
+		topics := make([]string, 0, len(cl.SubscribedTopics))
+		for topic := range cl.SubscribedTopics {
+			topics = append(topics, topic)
+		}
+		cl.Mutex.Unlock()
+
+		if len(topics) == 0 {
 			fmt.Println("📭 no subscriptions")
 		} else {
 			fmt.Println("📬 subscribed topics:")
-			for topic := range cl.SubscribedTopics {
+			for _, topic := range topics {
 				fmt.Printf("  - %s\n", topic)
 			}
 		}
-		cl.Mutex.Unlock()
 
 	case "help":
 		printHelp()

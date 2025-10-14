@@ -9,10 +9,27 @@ import (
 )
 
 func (c *Client) tcpReadLoop() {
-	reader := bufio.NewScanner(c.Connection)
+	defer c.readersStopped.Done()
+
+	c.Mutex.Lock()
+	conn := c.Connection
+	stopCh := c.stopReaders
+	c.Mutex.Unlock()
+
+	if conn == nil || stopCh == nil {
+		return
+	}
+
+	reader := bufio.NewScanner(conn)
 	reader.Split(bufio.ScanLines)
 
 	for reader.Scan() {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+
 		line := reader.Bytes()
 		var payload protocol.Payload
 		if err := json.Unmarshal(line, &payload); err != nil {
@@ -20,7 +37,19 @@ func (c *Client) tcpReadLoop() {
 			continue
 		}
 
-		c.ReadChannel <- payload
+		c.Mutex.Lock()
+		readCh := c.ReadChannel
+		c.Mutex.Unlock()
+
+		if readCh == nil {
+			return
+		}
+
+		select {
+		case readCh <- payload:
+		case <-stopCh:
+			return
+		}
 	}
 
 	if err := reader.Err(); err != nil {
@@ -29,8 +58,28 @@ func (c *Client) tcpReadLoop() {
 }
 
 func (c *Client) chanReadLoop() {
-	for val := range c.ReadChannel {
-		log.Printf("received payload from topic: %v", val.Body)
+	defer c.readersStopped.Done()
+
+	c.Mutex.Lock()
+	readCh := c.ReadChannel
+	stopCh := c.stopReaders
+	c.Mutex.Unlock()
+
+	if readCh == nil || stopCh == nil {
+		return
 	}
-	log.Println("read loop stopped")
+
+	for {
+		select {
+		case val, ok := <-readCh:
+			if !ok {
+				log.Println("read loop stopped: channel closed")
+				return
+			}
+			log.Printf("received payload from topic: %v", val.Body)
+		case <-stopCh:
+			log.Println("read loop stopped: shutdown signal")
+			return
+		}
+	}
 }

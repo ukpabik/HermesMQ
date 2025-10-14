@@ -22,6 +22,9 @@ type Client struct {
 	ReadChannel      chan protocol.Payload
 	SubscribeStore   limiter.Store
 	PublishStore     limiter.Store
+	stopReaders      chan struct{}
+	readersStarted   bool
+	readersStopped   sync.WaitGroup
 }
 
 var (
@@ -53,10 +56,12 @@ func InitializeClient(id string, conn net.Conn) (*Client, error) {
 		return nil, fmt.Errorf("unable to initialize publish rate limiter")
 	}
 	return &Client{
-		ID:             id,
-		Connection:     conn,
-		PublishStore:   publishStore,
-		SubscribeStore: subscribeStore,
+		ID:               id,
+		Connection:       conn,
+		PublishStore:     publishStore,
+		SubscribeStore:   subscribeStore,
+		SubscribedTopics: make(map[string]struct{}),
+		stopReaders:      make(chan struct{}),
 	}, nil
 }
 
@@ -73,6 +78,10 @@ func sendBytes(payload protocol.Payload, cl *Client) error {
 
 	cl.Mutex.Lock()
 	defer cl.Mutex.Unlock()
+
+	if cl.Connection == nil {
+		return fmt.Errorf("connection closed")
+	}
 
 	if err := cl.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return fmt.Errorf("set write deadline: %w", err)
@@ -103,15 +112,12 @@ func (c *Client) Subscribe(topicName string) error {
 	}
 
 	c.Mutex.Lock()
-	if c.SubscribedTopics == nil {
-		c.SubscribedTopics = make(map[string]struct{})
-	}
 	if _, exists := c.SubscribedTopics[topicName]; exists {
 		c.Mutex.Unlock()
 		return nil
 	}
 
-	shouldStartReaders := len(c.SubscribedTopics) == 0
+	shouldStartReaders := len(c.SubscribedTopics) == 0 && !c.readersStarted
 	c.SubscribedTopics[topicName] = struct{}{}
 	c.Mutex.Unlock()
 
@@ -172,9 +178,17 @@ func (c *Client) Unsubscribe(topicName string) error {
 }
 
 func (c *Client) startReaders() {
-	if c.ReadChannel == nil {
-		c.ReadChannel = make(chan protocol.Payload)
+	c.Mutex.Lock()
+	if c.readersStarted {
+		c.Mutex.Unlock()
+		return
 	}
+	if c.ReadChannel == nil {
+		c.ReadChannel = make(chan protocol.Payload, 100)
+	}
+	c.readersStarted = true
+	c.readersStopped.Add(2)
+	c.Mutex.Unlock()
 
 	go c.tcpReadLoop()
 	go c.chanReadLoop()
@@ -188,9 +202,8 @@ func (c *Client) IsConnected() bool {
 
 func (c *Client) Close() error {
 	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
-
 	if c.Connection == nil {
+		c.Mutex.Unlock()
 		return nil
 	}
 
@@ -198,9 +211,21 @@ func (c *Client) Close() error {
 	c.Connection = nil
 	c.SubscribedTopics = nil
 
-	if c.ReadChannel != nil {
-		close(c.ReadChannel)
-		c.ReadChannel = nil
+	wasStarted := c.readersStarted
+	if c.stopReaders != nil {
+		close(c.stopReaders)
+	}
+
+	readChan := c.ReadChannel
+	c.readersStarted = false
+	c.Mutex.Unlock()
+
+	if wasStarted {
+		c.readersStopped.Wait()
+	}
+
+	if readChan != nil {
+		close(readChan)
 	}
 
 	return err

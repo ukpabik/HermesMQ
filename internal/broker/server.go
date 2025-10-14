@@ -81,10 +81,12 @@ func (b *Broker) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				log.Println("broker shutting down...")
 
+				b.signalAllClientsShutdown()
+
+				b.forceCloseAllConnections()
+
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 				defer cancel()
-
-				b.signalAllClientsShutdown()
 
 				done := make(chan struct{})
 				go func() {
@@ -325,8 +327,14 @@ func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protoco
 		return fmt.Errorf("topic does not exist")
 	}
 
-	if ok, err := topic.removeClient(cl); err != nil || !ok {
-		return fmt.Errorf("unable to unsubscribe to topic: %v", err)
+	isEmpty, err := topic.removeClient(cl)
+	if err != nil {
+		return err
+	}
+	if isEmpty {
+		b.Mutex.Lock()
+		delete(b.TopicMap, parsedName)
+		b.Mutex.Unlock()
 	}
 
 	go func() {
@@ -368,12 +376,28 @@ func (b *Broker) signalAllClientsShutdown() {
 	}
 }
 
+func (b *Broker) forceCloseAllConnections() {
+	b.Mutex.Lock()
+	connections := make([]net.Conn, 0, len(b.CurrentConnections))
+	for _, wrapper := range b.CurrentConnections {
+		if wrapper.Client != nil && wrapper.Client.Connection != nil {
+			connections = append(connections, wrapper.Client.Connection)
+		}
+	}
+	b.Mutex.Unlock()
+
+	for _, conn := range connections {
+		conn.Close()
+	}
+}
+
 func (b *Broker) cleanupConnections() {
 	b.Mutex.Lock()
 	clients := make([]*client.Client, 0, len(b.CurrentConnections))
 	for _, wrapper := range b.CurrentConnections {
 		clients = append(clients, wrapper.Client)
 	}
+	b.CurrentConnections = make(map[string]*clientWrapper)
 	b.Mutex.Unlock()
 
 	for _, cl := range clients {
@@ -411,6 +435,10 @@ func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) err
 	cl.Mutex.Lock()
 	defer cl.Mutex.Unlock()
 
+	if cl.Connection == nil {
+		return fmt.Errorf("connection already closed")
+	}
+
 	data = append(data, '\n')
 
 	cl.Connection.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
@@ -435,7 +463,11 @@ func (b *Broker) DequeueLoop(ctx context.Context) {
 		case <-ticker.C:
 			payload, ok := b.MessageQueue.Dequeue()
 			if ok {
-				b.MessageQueue.ReadChannel <- *payload
+				select {
+				case b.MessageQueue.ReadChannel <- *payload:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
