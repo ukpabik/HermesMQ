@@ -123,21 +123,22 @@ func (c *Client) Subscribe(topicName string) error {
 
 	payload := &protocol.Payload{
 		Action:    "subscribe",
-		Type:      string(protocol.Data),
+		Type:      protocol.Data,
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
 		SenderID:  c.ID,
+	}
+
+	if shouldStartReaders {
+		c.startReaders()
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if err := sendBytes(*payload, c); err != nil {
 		c.Mutex.Lock()
 		delete(c.SubscribedTopics, topicName)
 		c.Mutex.Unlock()
-		return fmt.Errorf("subscribe to %s: %w", topicName, err)
-	}
-
-	if shouldStartReaders {
-		c.startReaders()
+		return fmt.Errorf("error subscribing to %s: %w", topicName, err)
 	}
 
 	return nil
@@ -166,14 +167,14 @@ func (c *Client) Unsubscribe(topicName string) error {
 
 	payload := &protocol.Payload{
 		Action:    "unsubscribe",
-		Type:      string(protocol.Data),
+		Type:      protocol.Data,
 		Topic:     topicName,
 		Timestamp: time.Now().UTC(),
 		SenderID:  c.ID,
 	}
 
 	if err := sendBytes(*payload, c); err != nil {
-		return fmt.Errorf("unsubscribe from %s: %w", topicName, err)
+		return fmt.Errorf("error unsubscribing from %s: %w", topicName, err)
 	}
 
 	return nil
@@ -189,10 +190,11 @@ func (c *Client) startReaders() {
 		c.ReadChannel = make(chan protocol.Payload, 100)
 	}
 	c.readersStarted = true
-	c.readersStopped.Add(1)
+	c.readersStopped.Add(2)
 	c.Mutex.Unlock()
 
 	go c.tcpReadLoop()
+	go c.chanReadLoop()
 }
 
 func (c *Client) IsConnected() bool {

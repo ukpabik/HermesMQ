@@ -425,11 +425,11 @@ func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) err
 
 	ackPayload := &protocol.Payload{
 		Action:    action + "_ack",
-		Type:      string(payloadType),
+		Type:      payloadType,
 		Topic:     topic,
 		Body:      body,
 		Timestamp: time.Now().UTC(),
-		SenderID:  "",
+		SenderID:  "broker",
 	}
 
 	data, err := json.Marshal(ackPayload)

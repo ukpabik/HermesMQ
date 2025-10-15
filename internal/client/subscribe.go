@@ -56,3 +56,31 @@ func (c *Client) tcpReadLoop() {
 		log.Printf("socket read error: %v", err)
 	}
 }
+
+func (c *Client) chanReadLoop() {
+	defer c.readersStopped.Done()
+	for {
+		select {
+		case <-c.stopReaders:
+			return
+		case msg, ok := <-c.ReadChannel:
+			if !ok {
+				return
+			}
+			c.handleMessage(msg)
+		}
+	}
+}
+
+func (c *Client) handleMessage(msg protocol.Payload) {
+	switch msg.Type {
+	case protocol.ACK:
+		log.Printf("✅ ACK [%s]: %v", msg.Topic, msg.Body)
+	case protocol.Error:
+		log.Printf("❌ ERROR [%s]: %v", msg.Topic, msg.Body)
+	case protocol.Data:
+		log.Printf("📨 MESSAGE [%s] from %s: %v", msg.Topic, msg.SenderID, msg.Body)
+	default:
+		log.Printf("📩 [%s]: %v", msg.Topic, msg.Body)
+	}
+}

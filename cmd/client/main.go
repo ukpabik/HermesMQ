@@ -41,28 +41,8 @@ func main() {
 		<-sigChan
 		log.Println("\n🛑 shutting down...")
 		cancel()
-	}()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-cl.ReadChannel:
-				if !ok {
-					log.Println("\n🔌 connection to broker lost")
-					select {
-					case <-disconnectChan:
-					default:
-						close(disconnectChan)
-					}
-					cancel()
-					return
-				}
-				fmt.Printf("\n📨 [%s] %v\n", msg.Topic, msg.Body)
-				fmt.Print("> ")
-			}
-		}
+		cl.Close()
+		os.Exit(0)
 	}()
 
 	printHelp()

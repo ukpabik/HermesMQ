@@ -4,7 +4,7 @@ import "time"
 
 type Payload struct {
 	Action    string      `json:"action"`
-	Type      string      `json:"type"`
+	Type      Type        `json:"type"`
 	Topic     string      `json:"topic"`
 	Body      interface{} `json:"body"`
 	Timestamp time.Time   `json:"timestamp"`
