@@ -159,11 +159,18 @@ func (c *Client) Unsubscribe(topicName string) error {
 
 	c.Mutex.Lock()
 	if _, exists := c.SubscribedTopics[topicName]; !exists {
+		shouldStartReaders := !c.readersStarted
 		c.Mutex.Unlock()
-		return nil
+
+		if shouldStartReaders {
+			c.startReaders()
+			time.Sleep(50 * time.Millisecond)
+		}
+
+	} else {
+		delete(c.SubscribedTopics, topicName)
+		c.Mutex.Unlock()
 	}
-	delete(c.SubscribedTopics, topicName)
-	c.Mutex.Unlock()
 
 	payload := &protocol.Payload{
 		Action:    "unsubscribe",

@@ -38,53 +38,80 @@ func (t *Topic) removeClient(c *client.Client) (bool, error) {
 	return isEmpty, nil
 }
 
-func (t *Topic) Broadcast(payload protocol.Payload, senderID string) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("error marshaling broadcast payload: %v", err)
+func (t *Topic) Broadcast(msg *protocol.Payload, excludeClientID string) error {
+	if msg == nil {
+		return fmt.Errorf("message is nil")
 	}
-	data = append(data, '\n')
 
 	t.Mutex.Lock()
 	subscribers := make([]*client.Client, 0, len(t.Subscribers))
-	for id, sub := range t.Subscribers {
-		if senderID != "" && id == senderID {
+	for _, sub := range t.Subscribers {
+		if sub.ID == excludeClientID {
 			continue
 		}
 		subscribers = append(subscribers, sub)
 	}
 	t.Mutex.Unlock()
 
-	sema := make(chan struct{}, 10)
+	if len(subscribers) == 0 {
+		log.Printf("no subscribers for topic %s", t.Name)
+		return nil
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal message: %w", err)
+	}
+	data = append(data, '\n')
 
 	var wg sync.WaitGroup
+	errorChan := make(chan error, len(subscribers))
+
 	for _, sub := range subscribers {
 		wg.Add(1)
-
-		sema <- struct{}{}
-		go func(cl *client.Client) {
+		go func(s *client.Client) {
 			defer wg.Done()
-			defer func() { <-sema }()
 
-			cl.Mutex.Lock()
-			conn := cl.Connection
-			cl.Mutex.Unlock()
+			s.Mutex.Lock()
+			defer s.Mutex.Unlock()
 
-			if conn == nil {
+			if s.Connection == nil {
+				errorChan <- fmt.Errorf("subscriber %s has nil connection", s.ID)
 				return
 			}
 
-			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				log.Printf("set deadline error for %s: %v", cl.ID, err)
+			if err := s.Connection.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				errorChan <- fmt.Errorf("set deadline for %s: %w", s.ID, err)
 				return
 			}
 
-			if _, err := conn.Write(data); err != nil {
-				log.Printf("write error to %s: %v", cl.ID, err)
+			written, err := s.Connection.Write(data)
+			if err != nil {
+				errorChan <- fmt.Errorf("write to subscriber %s: %w", s.ID, err)
+				return
+			}
+
+			if written != len(data) {
+				errorChan <- fmt.Errorf("incomplete write to %s: %d/%d bytes", s.ID, written, len(data))
 			}
 		}(sub)
 	}
 
 	wg.Wait()
+	close(errorChan)
+
+	var errors []error
+	for err := range errorChan {
+		if err != nil {
+			errors = append(errors, err)
+			log.Printf("broadcast error: %v", err)
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("broadcast had %d errors", len(errors))
+	}
+
+	log.Printf("successfully broadcast to %d subscribers on topic %s", len(subscribers), t.Name)
 	return nil
 }

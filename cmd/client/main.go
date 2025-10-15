@@ -106,8 +106,6 @@ func handleCommand(cl *client.Client, input string) bool {
 		topic := parts[1]
 		if err := cl.Subscribe(topic); err != nil {
 			fmt.Printf("❌ subscribe failed: %v\n", err)
-		} else {
-			fmt.Printf("✅ subscribed to '%s'\n", topic)
 		}
 
 	case "unsub", "unsubscribe":
@@ -118,8 +116,6 @@ func handleCommand(cl *client.Client, input string) bool {
 		topic := parts[1]
 		if err := cl.Unsubscribe(topic); err != nil {
 			fmt.Printf("❌ unsubscribe failed: %v\n", err)
-		} else {
-			fmt.Printf("✅ unsubscribed from '%s'\n", topic)
 		}
 
 	case "pub", "publish":
@@ -131,8 +127,6 @@ func handleCommand(cl *client.Client, input string) bool {
 		message := parts[2]
 		if err := cl.Publish(topic, message); err != nil {
 			fmt.Printf("❌ publish failed: %v\n", err)
-		} else {
-			fmt.Printf("✅ published to '%s'\n", topic)
 		}
 
 	case "list":

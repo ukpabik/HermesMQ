@@ -36,6 +36,7 @@ const (
 	publishState     = "publish"
 	subscribeState   = "subscribe"
 	unsubscribeState = "unsubscribe"
+	errorState       = "error"
 
 	clientReadTimeout  = 30 * time.Second
 	clientWriteTimeout = 5 * time.Second
@@ -140,11 +141,16 @@ func (b *Broker) Run(ctx context.Context) error {
 func (b *Broker) handleClientConnection(wrapper *clientWrapper) {
 	cl := wrapper.Client
 	defer func() {
-		log.Printf("cleaning up client %s", cl.ID)
+		if r := recover(); r != nil {
+			log.Printf("panic in client connection handler for %s: %v", cl.ID, r)
+		}
 		b.handleClientDisconnection(wrapper)
 	}()
 
-	cl.Connection.SetReadDeadline(time.Now().Add(clientReadTimeout))
+	if err := cl.Connection.SetReadDeadline(time.Now().Add(clientReadTimeout)); err != nil {
+		log.Printf("failed to set read deadline for client %s: %v", cl.ID, err)
+		return
+	}
 
 	scanner := bufio.NewScanner(cl.Connection)
 	scanner.Split(bufio.ScanLines)
@@ -157,47 +163,40 @@ func (b *Broker) handleClientConnection(wrapper *clientWrapper) {
 		default:
 		}
 
-		cl.Connection.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		if err := cl.Connection.SetReadDeadline(time.Now().Add(clientReadTimeout)); err != nil {
+			log.Printf("failed to reset read deadline for client %s: %v", cl.ID, err)
+			return
+		}
 
 		line := scanner.Bytes()
 
 		clientResp := &protocol.Payload{}
-		err := json.Unmarshal(line, &clientResp)
-		if err != nil {
+		if err := json.Unmarshal(line, &clientResp); err != nil {
 			log.Printf("invalid JSON from client %s: %v", cl.ID, err)
+			if err := b.sendACK(wrapper, fmt.Sprintf("Invalid JSON: %v", err), errorState, ""); err != nil {
+				log.Printf("failed to send error ACK: %v", err)
+			}
 			continue
 		}
 		clientResp.SenderID = cl.ID
 
 		log.Printf("received from client %s: %+v", cl.ID, clientResp)
 
+		var err error
 		switch clientResp.Action {
 		case publishState:
-			go func(payload protocol.Payload) {
-				if err := b.handleClientPublish(wrapper, payload); err != nil {
-					log.Printf("❌ [%s] publish error: %v", cl.ID, err)
-					b.sendACK(wrapper, fmt.Sprintf("publish failed: %v", err), "error", payload.Topic)
-				}
-			}(*clientResp)
-
+			err = b.handleClientPublish(wrapper, *clientResp)
 		case subscribeState:
-			go func(payload protocol.Payload) {
-				if err := b.handleClientSubscribe(wrapper, payload); err != nil {
-					log.Printf("❌ [%s] subscribe error: %v", cl.ID, err)
-					b.sendACK(wrapper, fmt.Sprintf("subscribe failed: %v", err), "error", payload.Topic)
-				}
-			}(*clientResp)
-
+			err = b.handleClientSubscribe(wrapper, *clientResp)
 		case unsubscribeState:
-			go func(payload protocol.Payload) {
-				if err := b.handleClientUnsubscribe(wrapper, payload); err != nil {
-					log.Printf("❌ [%s] unsubscribe error: %v", cl.ID, err)
-					b.sendACK(wrapper, fmt.Sprintf("unsubscribe failed: %v", err), "error", payload.Topic)
-				}
-			}(*clientResp)
-
+			err = b.handleClientUnsubscribe(wrapper, *clientResp)
 		default:
-			log.Printf("⚠️  [%s] unknown action: %s", cl.ID, clientResp.Action)
+			log.Printf("unknown action '%s' from client %s", clientResp.Action, cl.ID)
+			err = b.sendACK(wrapper, fmt.Sprintf("Unknown action: %s", clientResp.Action), errorState, clientResp.Topic)
+		}
+
+		if err != nil {
+			log.Printf("handler error for client %s: %v", cl.ID, err)
 		}
 	}
 
@@ -219,28 +218,36 @@ func parseTopicName(topicName string) (string, error) {
 func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
+		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
+		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
+		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
 	b.Mutex.Lock()
 	topic, ok := b.TopicMap[parsedName]
 	if !ok {
-		log.Printf("topic doesn't exist... creating topic")
-		newMap := make(map[string]*client.Client)
+		log.Printf("topic doesn't exist... creating topic %s", parsedName)
 		topic = &Topic{
 			Name:        parsedName,
-			Subscribers: newMap,
+			Subscribers: make(map[string]*client.Client),
 		}
 		b.TopicMap[parsedName] = topic
 	}
@@ -249,11 +256,10 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 
 	b.MessageQueue.Enqueue(&payload)
 
-	go func() {
-		if err := b.sendACK(wrapper, "Successfully published!", publishState, topicName); err != nil {
-			log.Printf("unable to send ACK to client: %v", err)
-		}
-	}()
+	if err := b.sendACK(wrapper, "Successfully published!", publishState, topicName); err != nil {
+		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
+		return err
+	}
 
 	return nil
 }
@@ -261,28 +267,36 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
+		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
+		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
+		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
 	b.Mutex.Lock()
 	topic, ok := b.TopicMap[parsedName]
 	if !ok {
-		log.Printf("topic doesn't exist... creating topic")
-		newMap := make(map[string]*client.Client)
+		log.Printf("topic doesn't exist... creating topic %s", parsedName)
 		topic = &Topic{
 			Name:        parsedName,
-			Subscribers: newMap,
+			Subscribers: make(map[string]*client.Client),
 		}
 		b.TopicMap[parsedName] = topic
 	}
@@ -290,14 +304,16 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 	b.Mutex.Unlock()
 
 	if ok, err := topic.addClient(cl); err != nil || !ok {
+		if err := b.sendACK(wrapper, fmt.Sprintf("Failed to subscribe: %v", err), errorState, topicName); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
 	}
 
-	go func() {
-		if err := b.sendACK(wrapper, "Successfully subscribed!", subscribeState, topicName); err != nil {
-			log.Printf("unable to send ACK to client: %v", err)
-		}
-	}()
+	if err := b.sendACK(wrapper, "Successfully subscribed!", subscribeState, topicName); err != nil {
+		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
+		return err
+	}
 
 	return nil
 }
@@ -305,17 +321,26 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
+		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
+		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
+		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
@@ -324,24 +349,30 @@ func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protoco
 	b.Mutex.Unlock()
 
 	if !ok {
+		if err := b.sendACK(wrapper, "Topic does not exist", errorState, parsedName); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return fmt.Errorf("topic does not exist")
 	}
 
 	isEmpty, err := topic.removeClient(cl)
 	if err != nil {
+		if err := b.sendACK(wrapper, fmt.Sprintf("Failed to unsubscribe: %v", err), errorState, topic.Name); err != nil {
+			log.Printf("unable to send ACK: %v", err)
+		}
 		return err
 	}
+
 	if isEmpty {
 		b.Mutex.Lock()
 		delete(b.TopicMap, parsedName)
 		b.Mutex.Unlock()
 	}
 
-	go func() {
-		if err := b.sendACK(wrapper, "Successfully unsubscribed!", unsubscribeState, topic.Name); err != nil {
-			log.Printf("unable to send ACK to client: %v", err)
-		}
-	}()
+	if err := b.sendACK(wrapper, "Successfully unsubscribed!", unsubscribeState, parsedName); err != nil {
+		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
+		return err
+	}
 
 	return nil
 }
@@ -408,13 +439,17 @@ func (b *Broker) cleanupConnections() {
 }
 
 func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) error {
-	cl := wrapper.Client
-	if cl == nil || cl.Connection == nil {
-		return fmt.Errorf("client or connection is nil")
+	if wrapper == nil || wrapper.Client == nil {
+		return fmt.Errorf("wrapper or client is nil")
 	}
-	payloadType := protocol.ACK
-	if action == "error" {
+
+	cl := wrapper.Client
+
+	var payloadType protocol.Type
+	if action == errorState {
 		payloadType = protocol.Error
+	} else {
+		payloadType = protocol.ACK
 	}
 
 	select {
@@ -499,7 +534,7 @@ func (b *Broker) ReadMessageLoop(ctx context.Context) {
 			b.Mutex.Unlock()
 
 			if exists {
-				if err := topic.Broadcast(val, val.SenderID); err != nil {
+				if err := topic.Broadcast(&val, val.SenderID); err != nil {
 					log.Printf("unable to broadcast: %v", err)
 				}
 			}
