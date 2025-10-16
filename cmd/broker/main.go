@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ukpabik/HermesMQ/internal/broker"
+	"github.com/ukpabik/HermesMQ/internal/redis"
 )
 
 func main() {
@@ -23,6 +24,8 @@ func main() {
 		log.Printf("received signal: %v — initiating shutdown...", sig)
 		cancel()
 	}()
+
+	redis.InitializeRedisClient("localhost:6379")
 
 	b := broker.InitializeBroker(":8080")
 	log.Printf("Starting server on port %s", b.Port)

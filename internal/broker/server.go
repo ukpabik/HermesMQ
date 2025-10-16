@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ukpabik/HermesMQ/internal/client"
 	"github.com/ukpabik/HermesMQ/internal/protocol"
+	"github.com/ukpabik/HermesMQ/internal/redis"
 )
 
 type Broker struct {
@@ -255,6 +256,9 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 	b.Mutex.Unlock()
 
 	b.MessageQueue.Enqueue(&payload)
+	if err := redis.StorePayload(payload); err != nil {
+		log.Printf("unable to store payload in redis: %v", err)
+	}
 
 	if err := b.sendACK(wrapper, "Successfully published!", publishState, topicName); err != nil {
 		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
@@ -313,6 +317,10 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 	if err := b.sendACK(wrapper, "Successfully subscribed!", subscribeState, topicName); err != nil {
 		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
 		return err
+	}
+
+	if err := redis.StoreOffset(topicName, cl.ID, 0); err != nil {
+		log.Printf("warning: failed to store offset: %v", err)
 	}
 
 	return nil
