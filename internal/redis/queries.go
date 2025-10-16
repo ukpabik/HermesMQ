@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -63,54 +62,4 @@ func GetPayload(key string) (*protocol.Payload, error) {
 	}
 
 	return &payload, nil
-}
-
-func StoreOffset(topic, clientID string, offset int64) error {
-	redisClient := shared.RedisClient
-	if redisClient == nil {
-		return fmt.Errorf("redis client not initialized")
-	}
-
-	redisClient.Mutex.Lock()
-	defer redisClient.Mutex.Unlock()
-
-	ctx := context.Background()
-	key := fmt.Sprintf("offset:%s:%s", topic, clientID)
-
-	err := redisClient.Client.Set(ctx, key, offset, 0).Err()
-	if err != nil {
-		return fmt.Errorf("unable to store offset: %v", err)
-	}
-
-	log.Printf("✅ stored offset for %s/%s: %d", topic, clientID, offset)
-	return nil
-}
-
-func GetOffset(topic, clientID string) (int64, error) {
-	redisClient := shared.RedisClient
-	if redisClient == nil {
-		return 0, fmt.Errorf("redis client not initialized")
-	}
-
-	redisClient.Mutex.Lock()
-	defer redisClient.Mutex.Unlock()
-
-	ctx := context.Background()
-	key := fmt.Sprintf("offset:%s:%s", topic, clientID)
-
-	val, err := redisClient.Client.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("error retrieving offset: %v", err)
-	}
-
-	var offset int64
-	offset, err = strconv.ParseInt(val, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing offset: %v", err)
-	}
-
-	return offset, nil
 }

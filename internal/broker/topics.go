@@ -9,7 +9,6 @@ import (
 
 	"github.com/ukpabik/HermesMQ/internal/client"
 	"github.com/ukpabik/HermesMQ/internal/protocol"
-	"github.com/ukpabik/HermesMQ/internal/redis"
 )
 
 type Topic struct {
@@ -96,11 +95,6 @@ func (t *Topic) Broadcast(msg *protocol.Payload, excludeClientID string) error {
 				errorChan <- fmt.Errorf("incomplete write to %s: %d/%d bytes", s.ID, written, len(data))
 			}
 
-			go func() {
-				if err := redis.StoreOffset(msg.Topic, s.ID, int64(time.Now().UnixNano())); err != nil {
-					log.Printf("failed to update offset for %s: %v", s.ID, err)
-				}
-			}()
 		}(sub)
 	}
 

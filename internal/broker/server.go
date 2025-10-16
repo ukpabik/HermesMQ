@@ -327,10 +327,6 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 		return err
 	}
 
-	if err := redis.StoreOffset(topicName, cl.ID, 0); err != nil {
-		log.Printf("warning: failed to store offset: %v", err)
-	}
-
 	return nil
 }
 
