@@ -175,9 +175,6 @@ func (b *Broker) handleClientConnection(wrapper *clientWrapper) {
 		clientResp := &protocol.Payload{}
 		if err := json.Unmarshal(line, &clientResp); err != nil {
 			log.Printf("invalid JSON from client %s: %v", cl.ID, err)
-			if err := b.sendACK(wrapper, fmt.Sprintf("Invalid JSON: %v", err), errorState, ""); err != nil {
-				log.Printf("failed to send error ACK: %v", err)
-			}
 			continue
 		}
 		clientResp.SenderID = cl.ID
@@ -194,7 +191,6 @@ func (b *Broker) handleClientConnection(wrapper *clientWrapper) {
 			err = b.handleClientUnsubscribe(wrapper, *clientResp)
 		default:
 			log.Printf("unknown action '%s' from client %s", clientResp.Action, cl.ID)
-			err = b.sendACK(wrapper, fmt.Sprintf("Unknown action: %s", clientResp.Action), errorState, clientResp.Topic)
 		}
 
 		if err != nil {
@@ -220,26 +216,17 @@ func parseTopicName(topicName string) (string, error) {
 func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
-		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
-		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
-		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
@@ -253,7 +240,6 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 		}
 		b.TopicMap[parsedName] = topic
 	}
-	topicName := topic.Name
 	b.Mutex.Unlock()
 
 	b.MessageQueue.Enqueue(&payload)
@@ -268,37 +254,23 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 		}
 	}()
 
-	if err := b.sendACK(wrapper, "Successfully published!", publishState, topicName); err != nil {
-		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
-		return err
-	}
-
 	return nil
 }
 
 func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
-		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
-		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
-		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
@@ -312,19 +284,10 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 		}
 		b.TopicMap[parsedName] = topic
 	}
-	topicName := topic.Name
 	b.Mutex.Unlock()
 
 	if ok, err := topic.addClient(cl); err != nil || !ok {
-		if err := b.sendACK(wrapper, fmt.Sprintf("Failed to subscribe: %v", err), errorState, topicName); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("unable to subscribe to topic: %v", err)
-	}
-
-	if err := b.sendACK(wrapper, "Successfully subscribed!", subscribeState, topicName); err != nil {
-		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
-		return err
 	}
 
 	return nil
@@ -333,26 +296,17 @@ func (b *Broker) handleClientSubscribe(wrapper *clientWrapper, payload protocol.
 func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protocol.Payload) error {
 	cl := wrapper.Client
 	if cl == nil {
-		if err := b.sendACK(wrapper, "Client is nil", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client is nil")
 	}
 
 	select {
 	case <-wrapper.Ctx.Done():
-		if err := b.sendACK(wrapper, "Client disconnected", errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("client disconnected")
 	default:
 	}
 
 	parsedName, err := parseTopicName(payload.Topic)
 	if err != nil {
-		if err := b.sendACK(wrapper, fmt.Sprintf("Invalid topic name: %v", err), errorState, payload.Topic); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("name malformed: %v", err)
 	}
 
@@ -361,17 +315,11 @@ func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protoco
 	b.Mutex.Unlock()
 
 	if !ok {
-		if err := b.sendACK(wrapper, "Topic does not exist", errorState, parsedName); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return fmt.Errorf("topic does not exist")
 	}
 
 	isEmpty, err := topic.removeClient(cl)
 	if err != nil {
-		if err := b.sendACK(wrapper, fmt.Sprintf("Failed to unsubscribe: %v", err), errorState, topic.Name); err != nil {
-			log.Printf("unable to send ACK: %v", err)
-		}
 		return err
 	}
 
@@ -379,11 +327,6 @@ func (b *Broker) handleClientUnsubscribe(wrapper *clientWrapper, payload protoco
 		b.Mutex.Lock()
 		delete(b.TopicMap, parsedName)
 		b.Mutex.Unlock()
-	}
-
-	if err := b.sendACK(wrapper, "Successfully unsubscribed!", unsubscribeState, parsedName); err != nil {
-		log.Printf("unable to send ACK to client %s: %v", cl.ID, err)
-		return err
 	}
 
 	return nil
@@ -448,58 +391,6 @@ func (b *Broker) cleanupConnections() {
 	}
 
 	log.Println("all connections cleaned up")
-}
-
-func (b *Broker) sendACK(wrapper *clientWrapper, body, action, topic string) error {
-	if wrapper == nil || wrapper.Client == nil {
-		return fmt.Errorf("wrapper or client is nil")
-	}
-
-	cl := wrapper.Client
-
-	var payloadType protocol.Type
-	if action == errorState {
-		payloadType = protocol.Error
-	} else {
-		payloadType = protocol.ACK
-	}
-
-	select {
-	case <-wrapper.Ctx.Done():
-		return fmt.Errorf("client disconnected, skipping ACK")
-	default:
-	}
-
-	ackPayload := &protocol.Payload{
-		Action:    action + "_ack",
-		Type:      payloadType,
-		Topic:     topic,
-		Body:      body,
-		Timestamp: time.Now().UTC(),
-		SenderID:  "broker",
-	}
-
-	data, err := json.Marshal(ackPayload)
-	if err != nil {
-		return fmt.Errorf("unable to marshal payload: %v", err)
-	}
-
-	cl.Mutex.Lock()
-	defer cl.Mutex.Unlock()
-
-	if cl.Connection == nil {
-		return fmt.Errorf("connection already closed")
-	}
-
-	data = append(data, '\n')
-
-	cl.Connection.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
-	_, err = cl.Connection.Write(data)
-	if err != nil {
-		return fmt.Errorf("error writing to subscriber %s: %v", cl.ID, err)
-	}
-
-	return nil
 }
 
 func (b *Broker) DequeueLoop(ctx context.Context) {
