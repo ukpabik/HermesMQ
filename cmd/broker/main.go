@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ukpabik/HermesMQ/internal/broker"
+	"github.com/ukpabik/HermesMQ/internal/db"
 	"github.com/ukpabik/HermesMQ/internal/redis"
 )
 
@@ -26,6 +27,10 @@ func main() {
 	}()
 
 	redis.InitializeRedisClient("localhost:6379")
+	db.InitializeClickHouseClient("localhost", 9000)
+	if err := db.CreateTables(); err != nil {
+		log.Fatalf("unable to create clickhouse tables: %v", err)
+	}
 
 	b := broker.InitializeBroker(":8080")
 	log.Printf("Starting server on port %s", b.Port)

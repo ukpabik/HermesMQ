@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ukpabik/HermesMQ/internal/client"
+	"github.com/ukpabik/HermesMQ/internal/db"
 	"github.com/ukpabik/HermesMQ/internal/protocol"
 	"github.com/ukpabik/HermesMQ/internal/redis"
 )
@@ -258,6 +259,10 @@ func (b *Broker) handleClientPublish(wrapper *clientWrapper, payload protocol.Pa
 	b.MessageQueue.Enqueue(&payload)
 	if err := redis.StorePayload(payload); err != nil {
 		log.Printf("unable to store payload in redis: %v", err)
+	}
+
+	if err := db.AddMessageToDB(payload); err != nil {
+		log.Printf("unable to store payload in db: %v", err)
 	}
 
 	if err := b.sendACK(wrapper, "Successfully published!", publishState, topicName); err != nil {
